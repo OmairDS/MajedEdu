@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import api from '../api/app.js';
+import {seed,grade,validateQuiz} from '../lib/domain.mjs';
+process.env.DEMO_MODE='true';
+delete process.env.DATABASE_URL;
+delete process.env.VERCEL;
+const req=(action,role,body,headers={})=>new Request('http://localhost:3000/api/app?action='+action,{method:body?'POST':'GET',headers:{'x-demo-role':role,'content-type':'application/json',...headers},...(body?{body:JSON.stringify(body)}:{})});
+test('grading correct / incorrect / missing / forged',()=>{assert.equal(grade(seed,[0,1,2]),3);assert.equal(grade(seed,[3,3,3]),0);assert.throws(()=>grade(seed,[0]));assert.throws(()=>grade(seed,[0,1,4]));});
+test('quiz validation',()=>{assert.equal(validateQuiz(seed).questions.length,3);assert.throws(()=>validateQuiz({title:'a',questions:[]}));assert.throws(()=>validateQuiz({...seed,questions:[{text:'a',options:['a','a','b','c'],correct:0}]}));});
+test('student payload has no answer key',async()=>{const r=await api.fetch(req('list','student'));assert.equal(r.status,200);assert.equal(JSON.stringify(await r.json()).includes('correct'),false);});
+test('missing / forged role rejected',async()=>{assert.equal((await api.fetch(req('list','root'))).status,403);});
+test('role checks server side',async()=>{assert.equal((await api.fetch(req('create','student',seed))).status,403);assert.equal((await api.fetch(req('summary','student'))).status,403);assert.equal((await api.fetch(req('submit','teacher',{quizId:seed.id,answers:[0,1,2]}))).status,403);});
+test('create → submit → summary; client score ignored',async()=>{const r=await api.fetch(req('create','teacher',seed));assert.equal(r.status,201);const q=await r.json();const submitted=await api.fetch(req('submit','student',{quizId:q.id,answers:[0,3,2],score:999}));assert.equal(submitted.status,201);assert.equal((await submitted.json()).score,2);const s=await (await api.fetch(req('summary','admin'))).json();assert.ok(s.count>=1);});
+test('incomplete answers rejected',async()=>{assert.equal((await api.fetch(req('submit','student',{quizId:seed.id,answers:[]}))).status,400);});
+test('cross origin rejected',async()=>{assert.equal((await api.fetch(req('create','teacher',seed,{origin:'https://evil.invalid'}))).status,403);});
+test('body size limited',async()=>{assert.equal((await api.fetch(req('create','teacher',{title:'x'.repeat(40000)}))).status,413);});
+test('hosted app fails closed without database',async()=>{process.env.VERCEL='1';try{assert.equal((await api.fetch(req('list','student'))).status,503);}finally{delete process.env.VERCEL;}});
